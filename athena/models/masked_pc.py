@@ -53,29 +53,33 @@ class MaskedPredictCoding(BaseModel):
         "input_dropout_rate": 0.0
     }
 
-    def __init__(self, num_classes, sample_shape, config=None):
+    def __init__(self, data_descriptions, config=None):
         super().__init__()
         self.downsample_scale = 4
-        self.num_classes = num_classes * self.downsample_scale
+        self.num_class = data_descriptions.num_class * self.downsample_scale
 
         # default settings
         self.hparams = register_and_parse_hparams(self.default_config, config, cls=self.__class__)
 
         # MPC loss fuction and metric
-        _, self.dim, self.num_channels = sample_shape["input"].as_list()
+        _, self.dim, self.num_channels = data_descriptions.sample_shape["input"].as_list()
         self.loss_function = MPCLoss()
         self.metric = tf.keras.metrics.Mean(name="AverageLoss")
 
         num_filters = self.hparams.num_filters
         d_model = self.hparams.d_model
         layers = tf.keras.layers
-        input_features = layers.Input(shape=sample_shape["input"], dtype=tf.float32)
+        input_features = layers.Input(
+            shape=data_descriptions.sample_shape["input"],
+            dtype=tf.float32
+        )
         inner = layers.Conv2D(
             filters=num_filters,
             kernel_size=(3, 3),
             strides=(2, 2),
             padding="same",
             use_bias=False,
+            data_format="channels_last",
         )(input_features)
         inner = layers.BatchNormalization()(inner)
         inner = tf.nn.relu6(inner)
@@ -85,6 +89,7 @@ class MaskedPredictCoding(BaseModel):
             strides=(2, 2),
             padding="same",
             use_bias=False,
+            data_format="channels_last",
         )(inner)
         inner = layers.BatchNormalization()(inner)
 
@@ -110,7 +115,7 @@ class MaskedPredictCoding(BaseModel):
             for _ in range(self.hparams.num_encoder_layers)
         ]
         self.encoder = TransformerEncoder(encoder_layers)
-        self.final_layer = layers.Dense(self.num_classes, input_shape=(d_model,))
+        self.final_layer = layers.Dense(self.num_class, input_shape=(d_model,))
         self.randomizer = tf.random_uniform_initializer(0, 1)
 
     def call(self, samples, training: bool = None):

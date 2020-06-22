@@ -25,6 +25,7 @@ from absl import logging
 from athena import HorovodSolver
 from athena.main import parse_config, train
 
+
 if __name__ == "__main__":
     logging.set_verbosity(logging.INFO)
     if len(sys.argv) < 2:
@@ -33,9 +34,11 @@ if __name__ == "__main__":
     tf.random.set_seed(1)
 
     json_file = sys.argv[1]
-    config = None
-    with open(json_file) as f:
-        config = json.load(f)
-    p = parse_config(config)
+    #config = None
+    #with open(json_file) as f:
+    #    config = json.load(f)
+    #p = parse_config(config)
     HorovodSolver.initialize_devices()
-    train(json_file, HorovodSolver, hvd.size(), hvd.local_rank())
+    #multi-servers training should use hvd.rank()
+    train(json_file, HorovodSolver, hvd.size(), hvd.rank())
+

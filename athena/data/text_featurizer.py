@@ -52,8 +52,8 @@ class Vocabulary:
 
         self.stoi = defaultdict(self._default_unk_index)
         self.itos = defaultdict(self._default_unk_symbol)
-        self.space, self.unk = "<space>", "<unk>"
-        self.unk_index, self.max_index = 0, 0
+        self.space, self.unk, self.eos = "<space>", "<unk>", "~"
+        self.unk_index, self.max_index, self.eos_index = 0, 0, 0
 
         with open(vocab_file, "r", encoding="utf-8") as vocab:
             for line in vocab:
@@ -65,6 +65,8 @@ class Vocabulary:
                 self.stoi[word] = index
                 if word == self.unk:
                     self.unk_index = index
+                if word == self.eos:
+                    self.eos_index = index
                 if index > self.max_index:
                     self.max_index = index
 
@@ -100,6 +102,17 @@ class Vocabulary:
         else:
             raise ValueError("unsupported input")
 
+class EnglishVocabulary(Vocabulary):
+    def __init__(self, vocab_file):
+        super().__init__(vocab_file)
+
+    def decode(self, ids):
+        """Convert a list of ids to a sentence."""
+        return " ".join([self.itos[id] for id in ids])
+
+    def encode(self, sentence):
+        """Convert a sentence to a list of ids, with special tokens added."""
+        return [self.stoi[token] for token in sentence.strip().split(' ')]
 
 class SentencePieceFeaturizer:
     """ TODO: docstring """
@@ -120,7 +133,7 @@ class SentencePieceFeaturizer:
     def encode(self, sentence):
         """Convert a sentence to a list of ids by sentence piece model"""
         sentence = sentence.upper()
-        return [self.sp.EncodeAsIds(sentence)]
+        return self.sp.EncodeAsIds(sentence)
 
     def decode(self, ids):
         """Conver a list of ids to a sentence"""
@@ -139,7 +152,7 @@ class TextTokenizer:
         self.tokenizer.fit_on_texts(text)
 
     def __len__(self):
-        return self.tokenizer.num_words + 1
+        return len(self.tokenizer.word_index) + 1
 
     def encode(self, texts):
         """Convert a sentence to a list of ids, with special tokens added."""
@@ -154,6 +167,7 @@ class TextFeaturizer:
     """ The main text featurizer interface """
     supported_model = {
         "vocab": Vocabulary,
+        "eng_vocab": EnglishVocabulary,
         "spm": SentencePieceFeaturizer,
         "text": TextTokenizer
     }

@@ -21,11 +21,16 @@ import warnings
 import time
 import tensorflow as tf
 from absl import logging
-import horovod.tensorflow as hvd
+try:
+    import horovod.tensorflow as hvd
+except ImportError:
+    print("There is some problem with your horovod installation. But it wouldn't affect single-gpu training")
 from .utils.hparam import register_and_parse_hparams
 from .utils.metric_check import MetricChecker
 from .utils.misc import validate_seqs
 from .metrics import CharactorAccuracy
+from .models.vocoder import GriffinLim
+from .tools.beam_search import BeamSearchDecoder
 
 
 class BaseSolver(tf.keras.Model):
@@ -50,8 +55,9 @@ class BaseSolver(tf.keras.Model):
         gpus = tf.config.experimental.list_physical_devices("GPU")
         for gpu in gpus:
             tf.config.experimental.set_memory_growth(gpu, True)
-        if gpus is not None:
-            assert len(gpus) > len(visible_gpu_idx)
+        # means we're running in GPU mode
+        if len(gpus) != 0:
+            assert len(gpus) >= len(visible_gpu_idx)
             for idx in visible_gpu_idx:
                 tf.config.experimental.set_visible_devices(gpus[idx], "GPU")
 
@@ -69,9 +75,11 @@ class BaseSolver(tf.keras.Model):
     def train_step(self, samples):
         """ train the model 1 step """
         with tf.GradientTape() as tape:
-            logits = self.model(samples, training=True)
-            loss, metrics = self.model.get_loss(logits, samples, training=True)
-        grads = tape.gradient(loss, self.model.trainable_variables)
+            # outputs of a forward run of model, potentially contains more than one item
+            outputs = self.model(samples, training=True)
+            loss, metrics = self.model.get_loss(outputs, samples, training=True)
+            total_loss = sum(list(loss.values())) if isinstance(loss, dict) else loss
+        grads = tape.gradient(total_loss, self.model.trainable_variables)
         grads = self.clip_by_norm(grads, self.hparams.clip_norm)
         self.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
         return loss, metrics
@@ -92,8 +100,9 @@ class BaseSolver(tf.keras.Model):
 
     def evaluate_step(self, samples):
         """ evaluate the model 1 step """
-        logits = self.model(samples, training=False)
-        loss, metrics = self.model.get_loss(logits, samples, training=False)
+        # outputs of a forward run of model, potentially contains more than one item
+        outputs = self.model(samples, training=False)
+        loss, metrics = self.model.get_loss(outputs, samples, training=False)
         return loss, metrics
 
     def evaluate(self, dataset, epoch):
@@ -110,10 +119,11 @@ class BaseSolver(tf.keras.Model):
             loss, metrics = evaluate_step(samples)
             if batch % self.hparams.log_interval == 0:
                 logging.info(self.metric_checker(loss, metrics, -2))
-            loss_metric.update_state(loss)
+            total_loss = sum(list(loss.values())) if isinstance(loss, dict) else loss
+            loss_metric.update_state(total_loss)
         logging.info(self.metric_checker(loss_metric.result(), metrics, evaluate_epoch=epoch))
         self.model.reset_metrics()
-        return loss_metric.result()
+        return loss_metric.result(), metrics
 
 class HorovodSolver(BaseSolver):
     """ A multi-processer solver based on Horovod """
@@ -133,11 +143,13 @@ class HorovodSolver(BaseSolver):
     def train_step(self, samples):
         """ train the model 1 step """
         with tf.GradientTape() as tape:
-            logits = self.model(samples, training=True)
-            loss, metrics = self.model.get_loss(logits, samples, training=True)
+            # outputs of a forward run of model, potentially contains more than one item
+            outputs = self.model(samples, training=True)
+            loss, metrics = self.model.get_loss(outputs, samples, training=True)
+            total_loss = sum(list(loss.values())) if isinstance(loss, dict) else loss
         # Horovod: add Horovod Distributed GradientTape.
         tape = hvd.DistributedGradientTape(tape)
-        grads = tape.gradient(loss, self.model.trainable_variables)
+        grads = tape.gradient(total_loss, self.model.trainable_variables)
         grads = self.clip_by_norm(grads, self.hparams.clip_norm)
         self.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
         return loss, metrics
@@ -165,53 +177,41 @@ class HorovodSolver(BaseSolver):
                 logging.info(self.metric_checker(loss, metrics))
                 self.model.reset_metrics()
 
-    def evaluate(self, dataset, epoch=0):
-        """ evaluate the model """
-        loss_metric = tf.keras.metrics.Mean(name="AverageLoss")
-        loss, metrics = None, None
-        evaluate_step = self.evaluate_step
-        if self.hparams.enable_tf_function:
-            logging.info("please be patient, enable tf.function, it takes time ...")
-            evaluate_step = tf.function(evaluate_step, input_signature=self.sample_signature)
-        self.model.reset_metrics()
-        for batch, samples in enumerate(dataset):
-            samples = self.model.prepare_samples(samples)
-            loss, metrics = evaluate_step(samples)
-            if batch % self.hparams.log_interval == 0 and hvd.local_rank() == 0:
-                logging.info(self.metric_checker(loss, metrics, -2))
-            loss_metric.update_state(loss)
-        if hvd.local_rank() == 0:
-            logging.info(self.metric_checker(loss_metric.result(), metrics, evaluate_epoch=epoch))
-            self.model.reset_metrics()
-        return loss_metric.result()
-
 
 class DecoderSolver(BaseSolver):
     """ DecoderSolver
     """
     default_config = {
+        "model_avg_num": 1,
         "beam_search": True,
         "beam_size": 4,
         "ctc_weight": 0.0,
         "lm_weight": 0.1,
+        "lm_type": "",
         "lm_path": None
     }
 
     # pylint: disable=super-init-not-called
-    def __init__(self, model, config=None):
+    def __init__(self, model, config=None, lm_model=None):
         super().__init__(model, None, None)
         self.model = model
         self.hparams = register_and_parse_hparams(self.default_config, config, cls=self.__class__)
+        self.decoder = BeamSearchDecoder.build_decoder(self.hparams,
+                                                       self.model.num_class,
+                                                       self.model.sos,
+                                                       self.model.eos,
+                                                       self.model.time_propagate,
+                                                       lm_model=lm_model)
 
-    def decode(self, dataset):
+    def decode(self, dataset, rank_size=1):
         """ decode the model """
         if dataset is None:
             return
-        metric = CharactorAccuracy()
+        metric = CharactorAccuracy(rank_size=rank_size)
         for _, samples in enumerate(dataset):
             begin = time.time()
             samples = self.model.prepare_samples(samples)
-            predictions = self.model.decode(samples, self.hparams)
+            predictions = self.model.decode(samples, self.hparams, self.decoder)
             validated_preds = validate_seqs(predictions, self.model.eos)[0]
             validated_preds = tf.cast(validated_preds, tf.int64)
             num_errs, _ = metric.update_state(validated_preds, samples)
@@ -227,3 +227,39 @@ class DecoderSolver(BaseSolver):
             )
             logging.info(reports)
         logging.info("decoding finished")
+
+
+class SynthesisSolver(BaseSolver):
+
+    default_config = {
+        "model_avg_num": 1,
+        "max_output_length": 15,
+        "end_prob": 0.5,
+        "gl_iters": 64,
+        "synthesize_from_true_fbank": True,
+        "output_directory": None
+    }
+
+    def __init__(self, model, data_descriptions=None, config=None):
+        super().__init__(model, None, None)
+        self.model = model
+        self.hparams = register_and_parse_hparams(self.default_config, config, cls=self.__class__)
+        self.feature_normalizer = data_descriptions.feature_normalizer
+        self.speakers_ids_dict = data_descriptions.speakers_ids_dict
+        self.vocoder = GriffinLim(data_descriptions)
+
+    def synthesize(self, dataset):
+        if dataset is None:
+            return
+        for i, samples in enumerate(dataset):
+            samples = self.model.prepare_samples(samples)
+            speaker = samples['speaker']
+            speaker = self.speakers_ids_dict[int(speaker[0])]
+            outputs = self.model.synthesize(samples, self.hparams)
+            features, _ = outputs
+            if self.hparams.synthesize_from_true_fbank:
+                samples_outputs = self.feature_normalizer(samples['output'][0],
+                                                          speaker, reverse=True)
+                self.vocoder(samples_outputs.numpy(), self.hparams, name='true_%s' % str(i))
+            features = self.feature_normalizer(features[0], speaker, reverse=True)
+            self.vocoder(features.numpy(), self.hparams, name=i)

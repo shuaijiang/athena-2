@@ -25,7 +25,10 @@ from athena import *
 
 SUPPORTED_DATASET_BUILDER = {
     "speech_recognition_dataset": SpeechRecognitionDatasetBuilder,
+    "speech_recognition_dataset_kaldiio": SpeechRecognitionDatasetKaldiIOBuilder,
+    "speech_systhesis_dataset": SpeechSynthesisDatasetBuilder,
     "speech_dataset": SpeechDatasetBuilder,
+    "speech_dataset_kaldiio": SpeechDatasetKaldiIOBuilder,
     "language_dataset": LanguageDatasetBuilder,
 }
 
@@ -35,13 +38,14 @@ SUPPORTED_MODEL = {
     "speech_transformer2": SpeechTransformer2,
     "mtl_transformer_ctc": MtlTransformerCtc,
     "mpc": MaskedPredictCoding,
-    "rnnlm": RNNLM
+    "rnnlm": RNNLM,
+    "translate_transformer": NeuralTranslateTransformer,
+    "tacotron2": Tacotron2
 }
 
 SUPPORTED_OPTIMIZER = {
     "warmup_adam": WarmUpAdam,
-    "expdecay_adam": ExponentialDecayAdam,
-    "adam": tf.keras.optimizers.Adam,
+    "expdecay_adam": ExponentialDecayAdam
 }
 
 DEFAULT_CONFIGS = {
@@ -63,7 +67,7 @@ DEFAULT_CONFIGS = {
     "trainset_config": None,
     "devset_config": None,
     "testset_config": None,
-    "decode_config": None,
+    "decode_config": None
 }
 
 def parse_config(config):
@@ -85,10 +89,7 @@ def build_model_from_jsonfile(jsonfile, pre_run=True):
     if p.trainset_config is None and p.num_classes is None:
         raise ValueError("trainset_config and num_classes can not both be null")
     model = SUPPORTED_MODEL[p.model](
-        num_classes=p.num_classes
-        if p.num_classes is not None
-        else dataset_builder.num_class,
-        sample_shape=dataset_builder.sample_shape,
+        data_descriptions=dataset_builder,
         config=p.model_config,
     )
     optimizer = SUPPORTED_OPTIMIZER[p.optimizer](p.optimizer_config)
@@ -118,7 +119,7 @@ def train(jsonfile, Solver, rank_size=1, rank=0):
 	:param rank: rank of current worker, 0 if using single gpu
 	"""
     p, model, optimizer, checkpointer = build_model_from_jsonfile(jsonfile)
-    epoch = checkpointer.save_counter
+    epoch = int(checkpointer.save_counter)
     if p.pretrained_model is not None and epoch == 0:
         p2, pretrained_model, _, _ = build_model_from_jsonfile(p.pretrained_model)
         model.restore_from_pretrained_model(pretrained_model, p2.model)
@@ -129,6 +130,7 @@ def train(jsonfile, Solver, rank_size=1, rank=0):
     # for cmvn
     trainset_builder = SUPPORTED_DATASET_BUILDER[p.dataset_builder](p.trainset_config)
     trainset_builder.compute_cmvn_if_necessary(rank == 0)
+    trainset_builder.shard(rank_size, rank)
 
     # train
     solver = Solver(
@@ -137,23 +139,24 @@ def train(jsonfile, Solver, rank_size=1, rank=0):
         sample_signature=trainset_builder.sample_signature,
         config=p.solver_config,
     )
+    loss = 0.0
+    metrics = {}
     while epoch < p.num_epochs:
         if rank == 0:
             logging.info(">>>>> start training in epoch %d" % epoch)
-        trainset_builder.shard(rank_size, rank)
         if epoch >= p.sorta_epoch:
             trainset_builder.batch_wise_shuffle(p.batch_size)
-        dataset = trainset_builder.as_dataset(p.batch_size, p.num_data_threads)
-        solver.train(dataset)
+        solver.train(trainset_builder.as_dataset(p.batch_size, p.num_data_threads))
+
+        if p.devset_config is not None:
+            if rank == 0:
+                logging.info(">>>>> start evaluate in epoch %d" % epoch)
+            devset_builder = SUPPORTED_DATASET_BUILDER[p.dataset_builder](p.devset_config)
+            devset = devset_builder.as_dataset(p.batch_size, p.num_data_threads)
+            loss, metrics = solver.evaluate(devset, epoch)
 
         if rank == 0:
-            logging.info(">>>>> start evaluate in epoch %d" % epoch)
-        devset_builder = SUPPORTED_DATASET_BUILDER[p.dataset_builder](p.devset_config)
-        dataset = devset_builder.as_dataset(p.batch_size, p.num_data_threads)
-        loss = solver.evaluate(dataset, epoch)
-
-        if rank == 0:
-            checkpointer(loss)
+            checkpointer(loss, metrics)
 
         epoch = epoch + 1
 

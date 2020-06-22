@@ -37,22 +37,25 @@ class RNNLM(BaseModel):
         "sos": -1,            # sos can be -1 or -2
         "eos": -1             # eos can be -1 or -2
     }
-    def __init__(self, num_classes, sample_shape, config=None):
+    def __init__(self, data_descriptions, config=None):
         """ config including the params for build lm """
         super(RNNLM, self).__init__()
         p = register_and_parse_hparams(self.default_config, config)
-        self.num_classes = (
-            num_classes + 1
+        self.num_class = (
+            data_descriptions.num_class + 1
             if p.sos == p.eos
-            else num_classes + 2
+            else data_descriptions.num_class + 2
         )
-        self.sos = self.num_classes + p.sos
-        self.eos = self.num_classes + p.eos
+        self.sos = self.num_class + p.sos
+        self.eos = self.num_class + p.eos
         self.metric = tf.keras.metrics.Mean(name="AverageLoss")
 
         layers = tf.keras.layers
-        input_features = layers.Input(shape=sample_shape["output"], dtype=tf.int32)
-        inner = tf.keras.layers.Embedding(self.num_classes, p.d_model)(input_features)
+        input_features = layers.Input(
+            shape=data_descriptions.sample_shape["output"],
+            dtype=tf.int32
+        )
+        inner = tf.keras.layers.Embedding(self.num_class, p.d_model)(input_features)
         for _ in range(p.num_layer):
             inner = tf.keras.layers.Dropout(p.dropout_rate)(inner)
             inner = tf.keras.layers.RNN(
@@ -60,7 +63,7 @@ class RNNLM(BaseModel):
                 return_sequences=True
             )(inner)
         inner = tf.keras.layers.Dropout(p.dropout_rate)(inner)
-        inner = tf.keras.layers.Dense(self.num_classes)(inner)
+        inner = tf.keras.layers.Dense(self.num_class)(inner)
         self.rnnlm = tf.keras.Model(inputs=input_features, outputs=inner)
 
     def call(self, samples, training: bool = None):
@@ -69,9 +72,9 @@ class RNNLM(BaseModel):
 
     def save_model(self, path):
         """
-        for saving model and current weight, path is h5 file name, like 'my_model.h5' 
-        usage: 
-        new_model = tf.keras.models.load_model(path) 
+        for saving model and current weight, path is h5 file name, like 'my_model.h5'
+        usage:
+        new_model = tf.keras.models.load_model(path)
         """
         self.rnnlm.save(path)
 
@@ -79,7 +82,7 @@ class RNNLM(BaseModel):
         """ get loss """
         labels = samples['output']
         labels = insert_eos_in_labels(labels, self.eos, samples['output_length'])
-        labels = tf.one_hot(labels, self.num_classes)
+        labels = tf.one_hot(labels, self.num_class)
         loss = tf.nn.softmax_cross_entropy_with_logits(labels=labels, logits=logits)
         n_token = tf.cast(tf.reduce_sum(samples['output_length'] + 1), tf.float32)
         self.metric.update_state(loss)

@@ -34,21 +34,25 @@ class DeepSpeechModel(BaseModel):
         "num_rnn_layers": 6,
         "rnn_type": "gru"
     }
-    def __init__(self, num_classes, sample_shape, config=None):
+    def __init__(self, data_descriptions, config=None):
         super().__init__()
-        self.num_classes = num_classes + 1
+        self.num_classes = data_descriptions.num_class + 1
         self.loss_function = CTCLoss(blank_index=-1)
         self.metric = CTCAccuracy()
         self.hparams = register_and_parse_hparams(self.default_config, config, cls=self.__class__)
 
         layers = tf.keras.layers
-        input_feature = layers.Input(shape=sample_shape["input"], dtype=tf.float32)
+        input_feature = layers.Input(
+            shape=data_descriptions.sample_shape["input"],
+            dtype=tf.float32
+        )
         inner = layers.Conv2D(
             filters=self.hparams.conv_filters,
             kernel_size=(41, 11),
             strides=(2, 2),
             padding="same",
             use_bias=False,
+            data_format="channels_last",
         )(input_feature)
         inner = layers.BatchNormalization()(inner)
         inner = tf.nn.relu6(inner)
@@ -58,6 +62,7 @@ class DeepSpeechModel(BaseModel):
             strides=(2, 1),
             padding="same",
             use_bias=False,
+            data_format="channels_last",
         )(inner)
         inner = layers.BatchNormalization()(inner)
         inner = tf.nn.relu6(inner)
