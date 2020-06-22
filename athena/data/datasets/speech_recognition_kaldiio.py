@@ -57,7 +57,8 @@ class SpeechRecognitionDatasetKaldiIOBuilder(BaseDatasetBuilder):
         "input_length_range": [20, 50000],
         "output_length_range": [1, 10000],
         "speed_permutation": [1.0],
-        "data_scps_dir": None
+        "data_scps_dir": None,
+        "merge_label": False
     }
 
     def __init__(self, config=None):
@@ -122,6 +123,8 @@ class SpeechRecognitionDatasetKaldiIOBuilder(BaseDatasetBuilder):
         feat = tf.convert_to_tensor(feat)
         feat = self.feature_normalizer(feat, speaker)
         label = list(self.kaldi_io_labels[key])
+        if self.hparams.merge_label:
+            label = self.merge_label(label)
 
         feat_length = feat.shape[0]
         label_length = len(label)
@@ -242,6 +245,23 @@ class SpeechRecognitionDatasetKaldiIOBuilder(BaseDatasetBuilder):
                 filter_entries.append(items)
         self.entries = filter_entries
         return self
+
+    def merge_label(self, label):
+        """ merge the label which is aligned at frame level
+            can be used for computing ctc loss
+        Args:
+            label: the label  aligned at frame level of one utterance
+        returns
+            merged_label: the merged label as an unique label sequence
+        """
+        merged_label_list = []
+        last_label = label[0]
+        merged_label_list.append(last_label)
+        for cur_label in label:
+            if cur_label != last_label:
+                merged_label_list.append(cur_label)
+                last_label = cur_label
+        return merged_label_list
 
     def compute_cmvn_if_necessary(self, is_necessary=True):
         """ compute cmvn file
