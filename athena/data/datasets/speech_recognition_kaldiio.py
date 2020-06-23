@@ -259,7 +259,8 @@ class SpeechRecognitionDatasetKaldiIOBuilder(BaseDatasetBuilder):
         merged_label_list.append(last_label)
         for cur_label in label:
             if cur_label != last_label:
-                merged_label_list.append(cur_label)
+                if cur_label < self.num_class:
+                    merged_label_list.append(cur_label)
                 last_label = cur_label
         return merged_label_list
 
