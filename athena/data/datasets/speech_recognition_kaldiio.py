@@ -58,6 +58,8 @@ class SpeechRecognitionDatasetKaldiIOBuilder(BaseDatasetBuilder):
         "output_length_range": [1, 10000],
         "speed_permutation": [1.0],
         "data_scps_dir": None,
+        "input_left_context": 0,
+        "input_right_context": 0,
         "merge_label": False
     }
 
@@ -74,6 +76,10 @@ class SpeechRecognitionDatasetKaldiIOBuilder(BaseDatasetBuilder):
 
         if self.hparams.data_scps_dir is not None:
             self.load_scps(self.hparams.data_scps_dir)
+        if self.hparams.input_left_context < 0:
+            self.hparams.set_hparam('input_left_context', 0)
+        if self.hparams.input_right_context < 0:
+            self.hparams.set_hparam('input_right_context', 0)
 
     def reload_config(self, config):
         """ reload the config """
@@ -122,6 +128,7 @@ class SpeechRecognitionDatasetKaldiIOBuilder(BaseDatasetBuilder):
         feat = feat.reshape(feat.shape[0], feat.shape[1], 1)
         feat = tf.convert_to_tensor(feat)
         feat = self.feature_normalizer(feat, speaker)
+        feat = self.splice_feature(feat)
         label = list(self.kaldi_io_labels[key])
         if self.hparams.merge_label:
             label = self.merge_label(label)
@@ -165,7 +172,8 @@ class SpeechRecognitionDatasetKaldiIOBuilder(BaseDatasetBuilder):
 
     @property
     def sample_shape(self):
-        dim = self.audio_featurizer.dim
+        dim = self.audio_featurizer.dim * \
+              (self.hparams.input_left_context + self.hparams.input_right_context + 1)
         nc = self.audio_featurizer.num_channels
         return {
             "input": tf.TensorShape([None, dim, nc]),
@@ -176,7 +184,9 @@ class SpeechRecognitionDatasetKaldiIOBuilder(BaseDatasetBuilder):
 
     @property
     def sample_signature(self):
-        dim = self.audio_featurizer.dim
+        dim = self.audio_featurizer.dim * \
+              (self.hparams.input_left_context + self.hparams.input_right_context + 1)
+
         nc = self.audio_featurizer.num_channels
         return (
             {
@@ -245,6 +255,32 @@ class SpeechRecognitionDatasetKaldiIOBuilder(BaseDatasetBuilder):
                 filter_entries.append(items)
         self.entries = filter_entries
         return self
+
+    def splice_feature(self, feature):
+        """ splice features according to input_left_context and input_right_context
+            input_left_context: the left features to be spliced,
+               repeat the first frame in case out the range
+            input_right_context: the right features to be spliced,
+               repeat the last frame in case out the range
+        Args:
+            feature: the input features, shape may be [timestamp, dim, 1]
+
+        returns:
+            splice_feat: the spliced features
+        """
+        splice_feat = feature
+
+        left_context_feat = feature
+        for _ in range(self.hparams.input_left_context):
+            left_context_feat = tf.concat(([feature[0]], left_context_feat[:-1]))
+            splice_feat = tf.concat((left_context_feat, splice_feat), axis=1)
+
+        right_context_feat = feature
+        for _ in range(self.hparams.input_right_context):
+            right_context_feat = tf.concat((right_context_feat[1:], [feature[-1]]))
+            splice_feat = tf.concat((splice_feat, right_context_feat), axis=1)
+
+        return splice_feat
 
     def merge_label(self, label):
         """ merge the label which is aligned at frame level
