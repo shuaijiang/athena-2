@@ -109,7 +109,7 @@ class SpeechRecognitionDatasetKaldiIOBuilder(BaseDatasetBuilder):
         self.entries = []
         for key in self.kaldi_io_feats.keys():
             self.entries.append(tuple([key, self.speakers[key]]))
-        
+
         if apply_sort_filter:
             logging.info("Sorting and filtering data, this is very slow, please be patient ...")
             self.entries.sort(key=lambda item: self.kaldi_io_feats[item[0]].shape[0])
@@ -272,12 +272,12 @@ class SpeechRecognitionDatasetKaldiIOBuilder(BaseDatasetBuilder):
 
         left_context_feat = feature
         for _ in range(self.hparams.input_left_context):
-            left_context_feat = tf.concat(([feature[0]], left_context_feat[:-1]))
+            left_context_feat = tf.concat(([feature[0]], left_context_feat[:-1]), axis=0)
             splice_feat = tf.concat((left_context_feat, splice_feat), axis=1)
 
         right_context_feat = feature
         for _ in range(self.hparams.input_right_context):
-            right_context_feat = tf.concat((right_context_feat[1:], [feature[-1]]))
+            right_context_feat = tf.concat((right_context_feat[1:], [feature[-1]]), axis=0)
             splice_feat = tf.concat((splice_feat, right_context_feat), axis=1)
 
         return splice_feat
