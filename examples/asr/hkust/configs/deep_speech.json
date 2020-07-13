@@ -47,5 +47,14 @@
     "audio_config":{"type":"Fbank", "filterbank_channel_count":40},
     "cmvn_file":"examples/asr/hkust/data/cmvn",
     "text_config": {"type":"vocab", "model":"examples/asr/hkust/data/vocab"}
-  }
+  },
+  "decode_config":{
+     "beam_search":true,
+     "beam_size":10,
+     "ctc_label": true,
+     "ctc_weight":0,
+     "lm_type":"",
+     "lm_weight":0.3,
+     "lm_path":"examples/asr/hkust/data/5gram.arpa"
+   }
 }

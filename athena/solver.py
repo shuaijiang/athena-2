@@ -27,7 +27,7 @@ except ImportError:
     print("There is some problem with your horovod installation. But it wouldn't affect single-gpu training")
 from .utils.hparam import register_and_parse_hparams
 from .utils.metric_check import MetricChecker
-from .utils.misc import validate_seqs
+from .utils.misc import validate_seqs, validate_ctc_seqs
 from .metrics import CharactorAccuracy
 from .models.vocoder import GriffinLim
 from .tools.beam_search import BeamSearchDecoder
@@ -205,6 +205,7 @@ class DecoderSolver(BaseSolver):
         "model_avg_num": 1,
         "beam_search": True,
         "beam_size": 4,
+        "ctc_label": False,
         "ctc_weight": 0.0,
         "lm_weight": 0.1,
         "lm_type": "",
@@ -232,7 +233,10 @@ class DecoderSolver(BaseSolver):
             begin = time.time()
             samples = self.model.prepare_samples(samples)
             predictions = self.model.decode(samples, self.hparams, self.decoder)
-            validated_preds = validate_seqs(predictions, self.model.eos)[0]
+            if self.params.ctc_label:
+                validated_preds = validate_ctc_seqs(predictions, self.model.blank)
+            else:
+                validated_preds = validate_seqs(predictions, self.model.eos)[0]
             validated_preds = tf.cast(validated_preds, tf.int64)
             num_errs, _ = metric.update_state(validated_preds, samples)
             reports = (
