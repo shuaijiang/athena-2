@@ -49,7 +49,7 @@ class DeepSpeechModel(BaseModel):
         )
         inner = layers.Conv2D(
             filters=self.hparams.conv_filters,
-            kernel_size=(41, 11),
+            kernel_size=(4, 4), # 41 11
             strides=(2, 2),
             padding="same",
             use_bias=False,
@@ -59,7 +59,7 @@ class DeepSpeechModel(BaseModel):
         inner = tf.nn.relu6(inner)
         inner = layers.Conv2D(
             filters=self.hparams.conv_filters,
-            kernel_size=(21, 11),
+            kernel_size=(4, 4), # 21 11
             strides=(2, 1),
             padding="same",
             use_bias=False,
