@@ -95,3 +95,9 @@ class DeepSpeechModel(BaseModel):
         logit_length = tf.math.ceil(logit_length / 2)
         logit_length = tf.cast(logit_length, tf.int32)
         return logit_length
+
+    def decode(self, samples, hparams, lm_model=None):
+        predicts =  self.net.predict(samples["input"])
+        softmax = tf.nn.softmax(predicts)
+        argmax = tf.math.argmax(softmax, axis=2)
+        return argmax
