@@ -245,19 +245,23 @@ class DecoderSolver(BaseSolver):
             return
         metric = CharactorAccuracy(rank_size=rank_size)
         for _, samples in enumerate(dataset):
+            validated_scores = []
             begin = time.time()
             samples = self.model.prepare_samples(samples)
             predictions = self.model.decode(samples, self.hparams, self.decoder)
             if self.params.ctc_label:
-                validated_preds = validate_ctc_seqs(predictions, self.model.blank)
+                predictions = predictions[0]
+                am_scores = predictions[1]
+                validated_preds, validated_scores = validate_ctc_seqs(predictions, am_scores, self.model.blank)
             else:
                 validated_preds = validate_seqs(predictions, self.model.eos)[0]
             validated_preds = tf.cast(validated_preds, tf.int64)
             num_errs, _ = metric.update_state(validated_preds, samples)
             reports = (
-                "predictions: %s\tlabels: %s\terrs: %d\tavg_acc: %.4f\tsec/iter: %.4f"
+                "predictions: %s\t scores: %s\tlabels: %s\terrs: %d\tavg_acc: %.4f\tsec/iter: %.4f"
                 % (
                     predictions,
+                    validated_scores,
                     samples["output"].numpy(),
                     num_errs,
                     metric.result(),
@@ -267,7 +271,7 @@ class DecoderSolver(BaseSolver):
             logging.info(reports)
         logging.info("decoding finished")
 
-
+'''
 class SynthesisSolver(BaseSolver):
     """ SynthesisSolver
     """
@@ -309,3 +313,4 @@ class SynthesisSolver(BaseSolver):
             features = self.feature_normalizer(features[0], speaker, reverse=True)
             self.vocoder(features.numpy(), self.hparams, name=i)
         logging.info("model computation elapsed: %s" % total_elapsed)
+'''
