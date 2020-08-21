@@ -52,6 +52,7 @@
      "beam_search":true,
      "beam_size":10,
      "ctc_label": true,
+     "print_ctc_scores": true,
      "ctc_weight":0,
      "lm_type":"",
      "lm_weight":0.3,

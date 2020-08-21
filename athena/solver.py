@@ -215,7 +215,8 @@ class DecoderSolver(BaseSolver):
         "decoder_type": "wfst_decoder",
         "model_avg_num": 1,
         "beam_size": 4,
-        "ctc_label": False,
+        "print_ctc_label": False,
+        "ctc_scores": False,
         "ctc_weight": 0.0,
         "lm_weight": 0.1,
         "lm_type": "",
@@ -257,19 +258,27 @@ class DecoderSolver(BaseSolver):
             begin = time.time()
             samples = self.model.prepare_samples(samples)
             predictions = self.model.decode(samples, self.hparams, self.decoder)
-            if self.params.ctc_label:
-                predictions = predictions[0]
-                am_scores = predictions[1]
-                validated_preds, validated_scores = validate_ctc_seqs(predictions, am_scores, self.model.blank)
+            if self.hparams.ctc_label:
+                if self.hparams.print_ctc_label:
+                    pred_labels = predictions[0]
+                    am_scores = predictions[1]
+                else:
+                    pred_labels = predictions
+                    am_scores = None
+                validated_preds, validated_scores = validate_ctc_seqs(pred_labels,
+                                                                      self.model.blank, am_scores)
             else:
-                validated_preds = validate_seqs(predictions, self.model.eos)[0]
+                pred_labels = predictions
+                validated_preds = validate_seqs(pred_labels, self.model.eos)[0]
+
             validated_preds = tf.cast(validated_preds, tf.int64)
             num_errs, _ = metric.update_state(validated_preds, samples)
+
             reports = (
-                "predictions: %s\t scores: %s\tlabels: %s\terrs: %d\tavg_acc: %.4f\tsec/iter: %.4f"
+                "predictions: %s\tscores: %s\tlabels: %s\terrs: %d\tavg_acc: %.4f\tsec/iter: %.4f"
                 % (
-                    predictions,
-                    validated_scores,
+                    validated_preds.values.numpy(),
+                    validated_scores.values.numpy() if validated_scores is not None else None,
                     samples["output"].numpy(),
                     num_errs,
                     metric.result(),
