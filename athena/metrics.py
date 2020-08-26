@@ -62,6 +62,36 @@ class Accuracy:
             return 0.0
         return 1.0 - error_rate
 
+class FrameAccuracy(Accuracy):
+    """ Frame Accuracy
+    Class for framewise error rate calculation
+    """
+    def __init__(self, name="FrameAccuracy", rank_size=1):
+        super().__init__(name=name, rank_size=rank_size)
+
+    def update_state(self, predictions, samples, logit_length=None):
+        """ Accumulate errors and counts """
+        input_length = tf.cast(samples["input_length"], tf.float32)
+        pred_length = tf.cast(tf.shape(predictions)[1], tf.float32)
+        down_num = tf.cast(tf.math.ceil(input_length / pred_length), tf.int32)
+        labels_down = samples["output"][:,::down_num[0]]
+
+        labels = tf.cast(tf.squeeze(labels_down), dtype=tf.int64)
+        num_labels = tf.shape(labels)[1]
+        softmax = tf.nn.softmax(predictions)
+        predictions = tf.argmax(softmax, axis=2)
+
+        num_errs = num_labels - tf.reduce_sum(
+                        tf.cast(tf.math.equal(labels, predictions), dtype=tf.int32))
+
+        if self.rank_size > 1:
+            num_errs = hvd.allreduce(num_errs, average=False)
+            num_labels = hvd.allreduce(num_labels, average=False)
+
+        self.error_count(num_errs)
+        self.total_count(num_labels)
+        return num_errs, num_labels
+
 
 class CharactorAccuracy(Accuracy):
     """ CharactorAccuracy

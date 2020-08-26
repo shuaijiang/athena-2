@@ -20,6 +20,28 @@ import math
 import tensorflow as tf
 from .utils.misc import insert_eos_in_labels
 
+class CrossEntropyLoss(tf.keras.losses.Loss):
+    """ Cross Entropy Loss """
+    def __init__(self, num_classes=1314, name="CrossEntropyLoss"):
+        super().__init__(name=name)
+        self.num_classes = num_classes
+
+    def __call__(self, logits, samples, logit_length=None):
+        """
+        Args:
+            logits: [batch_size, logit_length, num_class]
+            samples:
+            logit_length:
+        Returns:
+            cross entropy loss
+        """
+        input_length = tf.cast(samples["input_length"], tf.float32)
+        logits_length = tf.cast(tf.shape(logits)[1], tf.float32)
+        down_num = tf.cast(tf.math.ceil(input_length / logits_length), tf.int32)[0]
+        labels_down = samples["output"][:,::down_num]
+        labels = tf.one_hot(indices=labels_down, depth=self.num_classes)
+        ce_loss = tf.nn.softmax_cross_entropy_with_logits(labels=labels, logits=logits)
+        return tf.reduce_mean(ce_loss)
 
 class CTCLoss(tf.keras.losses.Loss):
     """ CTC LOSS
