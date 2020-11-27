@@ -15,29 +15,27 @@
 # limitations under the License.
 # ==============================================================================
 # Only support eager mode and TF>=2.0.0
-# pylint: disable=no-member, invalid-name, relative-beyond-top-level
-# pylint: disable=too-many-locals, too-many-statements, too-many-arguments, too-many-instance-attributes
 """ an implementation of resnet model that can be used as a sample
     for speaker recognition """
 
 import tensorflow as tf
 from .base import BaseModel
-from ..loss import SoftmaxLoss, AMSoftmaxLoss, AAMSoftmaxLoss, ProtoLoss, AngleProtoLoss, GE2ELoss
-from ..metrics import ClassificationAccuracy
+from ..loss import SoftmaxLoss, MSELoss, AAMSoftmaxLoss, ProtoLoss, AngleProtoLoss, GE2ELoss
+from ..metrics import MeanAbsoluteError
 from ..layers.resnet_block import ResnetBasicBlock, stack_fn
 from ..utils.hparam import register_and_parse_hparams
 from tensorflow.keras.regularizers import l2
 
 SUPPORTED_LOSS = {
     "softmax": SoftmaxLoss,
-    "amsoftmax": AMSoftmaxLoss,
+    "mseloss": MSELoss,
     "aamsoftmax": AAMSoftmaxLoss,
     "prototypical": ProtoLoss,
     "angular_prototypical": AngleProtoLoss,
     "ge2e": GE2ELoss
 }
 
-class SpeakerResnet(BaseModel):
+class AgeResnetRelu(BaseModel):
     """ A sample implementation of resnet 34 for speaker recognition
         Reference to paper "Deep residual learning for image recognition"
         The implementation is the same as the standard resnet with 34 weighted layers,
@@ -48,20 +46,19 @@ class SpeakerResnet(BaseModel):
         "hidden_size": 128,
         "num_filters": [16, 32, 64, 128],
         "num_layers": [3, 4, 6, 3],
-        "loss": "amsoftmax",
-        "margin": 0.3,
+        "loss": "mseloss",
+        "max_age": 100,
         "scale": 15
     }
 
     def __init__(self, data_descriptions, config=None):
         super().__init__()
         self.hparams = register_and_parse_hparams(self.default_config, config, cls=self.__class__)
-        # number of speakers
-        self.num_class = self.hparams.num_speakers
+        # maximum value of speakers' ages
+        self.max_age = self.hparams.max_age
+
         self.loss_function = self.init_loss(self.hparams.loss)
-        self.metric = ClassificationAccuracy(top_k=1, name="Top1-Accuracy")
-        num_filters = self.hparams.num_filters
-        num_layers = self.hparams.num_layers
+        self.metric = MeanAbsoluteError(max_val=100, is_norm=False, name="MAE")
 
         layers = tf.keras.layers
         input_features = layers.Input(shape=data_descriptions.sample_shape["input"],
@@ -70,8 +67,6 @@ class SpeakerResnet(BaseModel):
         bn_axis = 3
         weight_decay = 1e-4
 
-        #x = layers.ZeroPadding2D(
-        #    padding=((3, 3), (3, 3)), name='conv1_pad')(input_features)
         x = input_features
         x = layers.Conv2D(
             16, 7,
@@ -86,13 +81,11 @@ class SpeakerResnet(BaseModel):
             axis=bn_axis, epsilon=1.001e-5, name='conv1_bn')(x)
         x = layers.Activation('relu', name='conv1_relu')(x)
 
-        #x = layers.ZeroPadding2D(padding=((1, 1), (1, 1)), name='pool1_pad')(x)
         x = layers.MaxPooling2D(3, strides=2, name='pool1_pool', padding='same')(x)
 
         x = stack_fn(x)
 
         x = layers.GlobalAveragePooling2D(name='avg_pool')(x)
-
 
         x = layers.Dense(self.hparams.hidden_size,
                            kernel_initializer='orthogonal',
@@ -101,16 +94,17 @@ class SpeakerResnet(BaseModel):
                            bias_regularizer=l2(weight_decay),
                            name='projection')(x)
 
-        x = layers.Dense(self.num_class,
+        x = layers.Dense(1,
+                            activation=tf.keras.activations.relu,
                             kernel_initializer='orthogonal',
                             use_bias=False, trainable=True,
                             kernel_regularizer=l2(weight_decay),
                             bias_regularizer=l2(weight_decay),
                             name='prediction')(x)
-
+        x = tf.keras.activations.relu(x, max_value=self.max_age)
         # Create model
-        self.speaker_resnet = tf.keras.Model(inputs=input_features, outputs=x, name="resnet-34")
-        print(self.speaker_resnet.summary())
+        self.age_resnet = tf.keras.Model(inputs=input_features, outputs=x, name="resnet-34")
+        print(self.age_resnet.summary())
 
     def make_resnet_block_layer(self, num_filter, num_blocks, stride=1):
         """ returns sequential layer composed of resnet block """
@@ -122,7 +116,7 @@ class SpeakerResnet(BaseModel):
 
     def make_final_layer(self, embedding_size, num_class, loss):
         layers = tf.keras.layers
-        if loss == "softmax":
+        if loss in ("softmax", "mseloss"):
             final_layer = layers.Dense(
                 num_class,
                 kernel_initializer=tf.compat.v1.truncated_normal_initializer(stddev=0.02),
@@ -147,7 +141,7 @@ class SpeakerResnet(BaseModel):
     def call(self, samples, training=None):
         """ call model """
         input_features = samples["input"]
-        output = self.speaker_resnet(input_features, training=training)
+        output = self.age_resnet(input_features, training=training)
         return output
 
     def init_loss(self, loss):
@@ -156,11 +150,10 @@ class SpeakerResnet(BaseModel):
             loss_function = SUPPORTED_LOSS[loss](
                                 num_classes=self.num_class
                             )
-        elif loss in ("amsoftmax", "aamsoftmax"):
+        elif loss == "mseloss":
             loss_function = SUPPORTED_LOSS[loss](
-                                num_classes=self.num_class,
-                                margin=self.hparams.margin,
-                                scale=self.hparams.scale
+                                max_scale=self.max_age,
+                                is_norm=False
                             )
         else:
             raise NotImplementedError
@@ -196,29 +189,8 @@ class SpeakerResnet(BaseModel):
         metrics = {self.metric.name: self.metric.result()}
         return loss, metrics
 
-    def get_speaker_embedding(self, samples, training=None):
-        """ call model """
-        input_features = samples["input"]
-        embedding = self.speaker_resnet(input_features, training=False)
-        return embedding
 
     def decode(self, samples, hparams=None, decoder=None):
         outputs = self.call(samples, training=False)
         return outputs
 
-    def verification(self, samples):
-        """calculate cosine similarity between two features
-
-        Args:
-            samples: a dict contains "input_a" and "input_b"
-
-        Returns:
-            float: cosine similarity
-        """
-        input_features_a, input_features_b = samples["input_a"], samples["input_b"]
-        output_a = self.speaker_resnet(input_features_a, training=False)
-        output_b = self.speaker_resnet(input_features_b, training=False)
-        output_a_norm = tf.math.l2_normalize(output_a, axis=1)
-        output_b_norm = tf.math.l2_normalize(output_b, axis=1)
-        cosine_simil = tf.reduce_sum(output_a_norm * output_b_norm, axis=1)
-        return cosine_simil

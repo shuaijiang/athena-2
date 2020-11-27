@@ -62,6 +62,7 @@ from .models.rnn_lm import RNNLM
 from .models.translate_transformer import NeuralTranslateTransformer
 from .models.stargan_vc import StarganModel
 from .models.speaker_resnet import SpeakerResnet
+from .models.age_resnet_relu import AgeResnetRelu
 
 # solver & loss & accuracy
 from .solver import BaseSolver

@@ -19,6 +19,8 @@
 import os
 from absl import logging
 import tensorflow as tf
+import librosa
+import numpy as np
 from athena.transform import AudioFeaturizer
 from ...utils.hparam import register_and_parse_hparams
 from ..feature_normalizer import FeatureNormalizer
@@ -48,7 +50,7 @@ class SpeakerRecognitionDatasetBuilder(BaseDatasetBuilder):
     default_config = {
         "audio_config": {"type": "Fbank"},
         "cmvn_file": None,
-        "cut_frame": None,
+        "cut_frame": [None],
         "input_length_range": [20, 50000],
         "data_csv": None
     }
@@ -93,7 +95,9 @@ class SpeakerRecognitionDatasetBuilder(BaseDatasetBuilder):
     def cut_features(self, feature):
         """ Cut acoustic featuers
         """
-        length = self.hparams.cut_frame
+        min_len, max_len = self.hparams.cut_frame
+        # length = self.hparams.cut_frame
+        length = tf.random.uniform([], min_len, max_len, tf.int32)
         # randomly select a start frame
         max_start_frames = tf.shape(feature)[0] - length
         if max_start_frames <= 0:
@@ -105,11 +109,28 @@ class SpeakerRecognitionDatasetBuilder(BaseDatasetBuilder):
         """ load csv file """
         return self.preprocess_data(data_csv_path)
 
+    def load_data_librosa(self, path, win_length=400, sr=16000, hop_length=160,
+                n_fft=512):
+        wav, _ = librosa.load(path, sr=sr)
+        wav = np.asfortranarray(wav)
+        linear_spect = librosa.stft(wav, n_fft=n_fft, win_length=win_length, hop_length=hop_length)
+        mag, _ = librosa.magphase(linear_spect)  # magnitude (257, time_steps)
+        # preprocessing, subtract mean, divided by time-wise var
+        mu = np.mean(mag, 1, keepdims=True)
+        std = np.std(mag, 1, keepdims=True)
+        data = (mag - mu) / (std + 1e-5)
+        return data
+
     def __getitem__(self, index):
         audio_data, _, spkid, spkname = self.entries[index]
         feat = self.audio_featurizer(audio_data)
-        feat = self.feature_normalizer(feat, spkname)
-        if self.hparams.cut_frame is not None:
+        #feat = self.feature_normalizer(feat, 'global')
+        #mu = np.mean(feat, 1, keepdims=True)
+        #std = np.std(feat, 1, keepdims=True)
+        #feat = (feat - mu) / (std + 1e-5)
+        #feat = self.load_data_librosa(audio_data)
+        feat = tf.reshape(tf.convert_to_tensor(feat), [-1, self.hparams.audio_config['filterbank_channel_count'], 1])
+        if self.hparams.cut_frame != [None]:
             feat = self.cut_features(feat)
         feat_length = feat.shape[0]
         spkid = [spkid]
@@ -128,6 +149,10 @@ class SpeakerRecognitionDatasetBuilder(BaseDatasetBuilder):
     def num_class(self):
         ''' return the number of speakers'''
         return len(self.speakers)
+
+    @property
+    def speaker_list(self):
+        return self.speakers
 
     @property
     def sample_type(self):
@@ -196,7 +221,7 @@ class SpeakerRecognitionDatasetBuilder(BaseDatasetBuilder):
             self.feature_normalizer.compute_cmvn(
                 self.entries, self.speakers, self.audio_featurizer, feature_dim
             )
-        self.feature_normalizer.save_cmvn()
+        self.feature_normalizer.save_cmvn(["speaker", "mean", "var"])
         return self
 
 
