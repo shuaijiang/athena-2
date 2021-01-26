@@ -142,6 +142,31 @@ def validate_ctc_seqs(seqs, blank):
     validated_preds = tf.sparse.from_dense(validated_preds)
     return validated_preds
 
+def validate_ctc_seqs(seqs, scores, blank):
+    """ Merge continuous repeat symbols and remobe blank symbols for CTC
+    Args:
+      seqs: tf.Tensor shape=(batch_size, seq_length)
+      scores: tf.Tensor shape=(batch_size, seq_length)
+    Returns:
+      validated_preds: tf.SparseTensor
+    """
+    indexes = tf.TensorArray(tf.bool, size=0, dynamic_size=True)
+
+    indexes.write(0, tf.not_equal(seqs[:,0], seqs[:,0])) # Blank is always at the beginning
+    for i in tf.range(1, tf.shape(seqs)[1]):
+        is_keep = tf.logical_and(tf.not_equal(blank, seqs[:,i]),
+                       tf.not_equal(seqs[:,i-1], seqs[:,i]))
+        indexes.write(i, is_keep)
+    indexes = tf.transpose(indexes.stack(), [1, 0])
+
+    validated_preds = tf.where(indexes, seqs, tf.zeros_like(seqs))
+    validated_preds = tf.sparse.from_dense(validated_preds)
+
+    validated_scores = tf.where(indexes, scores, tf.zeros_like(scores))
+    validated_scores = tf.sparse.from_dense(validated_scores)
+
+    return validated_preds, validated_scores
+
 def get_wave_file_length(wave_file):
     """  get the wave file length(duration) in ms
 
