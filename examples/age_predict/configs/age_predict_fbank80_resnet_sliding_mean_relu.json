@@ -1,0 +1,57 @@
+{
+  "batch_size":32,
+  "num_epochs":50,
+  "sorta_epoch":0,
+  "ckpt":"examples/age_predict/ckpts/age_predict_fbank80_resnet_sliding_mean_l2regul_sgd_cut_200_1000_nobias_denseregul_linear_mseloss_relu_batch32/",
+  "summary_dir":"examples/age_predict/ckpts/age_predict_fbank80_resnet_sliding_mean_l2regul_sgd_cut_200_1000_nobias_denseregul_linear_mseloss_relu_batch32/event",
+
+  "solver_gpu":[],
+  "solver_config":{
+    "clip_norm":100,
+    "log_interval":10,
+    "enable_tf_function":true
+  },
+
+  "model":"age_resnet_relu",
+  "num_classes":null,
+  "pretrained_model":null,
+  "model_config":{
+    "num_speakers":3,
+    "hidden_size":128,
+    "num_filters":[16, 32, 64, 128],
+    "num_layers":[3, 4, 6, 3],
+    "loss":"mseloss",
+    "max_age": 100
+  },
+
+  "optimizer":"decay_sgd",
+  "optimizer_config":{
+    "momentum": 0.9,
+    "nesterov": false,
+    "lr_decay_boundaries": [10000, 50000, 100000],
+    "lr_decay_values": [0.01, 0.005, 0.0005, 0.0001]
+  },
+
+  "decode_config":{
+    "model_avg_num":10,
+    "is_norm": false
+  },
+
+  "dataset_builder":"speaker_recognition_dataset",
+  "test_dataset_builder":"speaker_recognition_dataset",
+  "num_data_threads":1,
+  "trainset_config":{
+      "data_csv": "examples/age_predict/data/csv_fbank80_age/train.csv",
+      "audio_config":{"type":"Fbank", "filterbank_channel_count":80},
+      "cut_frame":[200, 1000],
+      "input_length_range":[10, 20000]
+  },
+  "devset_config":{
+      "data_csv": "examples/age_predict/data/csv_fbank80_age/dev.csv",
+      "audio_config":{"type":"Fbank", "filterbank_channel_count":80}
+  },
+  "testset_config":{
+      "data_csv": "examples/age_predict/data/csv_fbank80_age/dev.csv",
+      "audio_config":{"type":"Fbank", "filterbank_channel_count":80}
+  }
+}

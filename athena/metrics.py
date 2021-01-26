@@ -19,16 +19,19 @@
 from absl import logging
 import numpy as np
 import tensorflow as tf
-from scipy.optimize import brentq
-from scipy.interpolate import interp1d
-from sklearn.metrics import roc_curve
 from .utils.misc import validate_seqs
 try:
     import horovod.tensorflow as hvd
 except ImportError:
     print("There is some problem with your horovod installation. \
 But it wouldn't affect single-gpu training")
-
+try:
+    from scipy.optimize import brentq
+    from scipy.interpolate import interp1d
+    from sklearn.metrics import roc_curve
+except ImportError:
+    print("There is some problem with your scipy and sklearn installation. \
+But it would only affect evaluating for speaker verification task.")
 
 class Accuracy:
     """ Accuracy
@@ -61,6 +64,36 @@ class Accuracy:
         if error_rate == self.inf:
             return 0.0
         return 1.0 - error_rate
+
+class FrameAccuracy(Accuracy):
+    """ Frame Accuracy
+    Class for framewise error rate calculation
+    """
+    def __init__(self, name="FrameAccuracy", rank_size=1):
+        super().__init__(name=name, rank_size=rank_size)
+
+    def update_state(self, predictions, samples, logit_length=None):
+        """ Accumulate errors and counts """
+        input_length = tf.cast(samples["input_length"], tf.float32)
+        pred_length = tf.cast(tf.shape(predictions)[1], tf.float32)
+        down_num = tf.cast(tf.math.ceil(input_length / pred_length), tf.int32)
+        labels_down = samples["output"][:,::down_num[0]]
+
+        labels = tf.cast(tf.squeeze(labels_down), dtype=tf.int64)
+        num_labels = tf.shape(labels)[1]
+        softmax = tf.nn.softmax(predictions)
+        predictions = tf.argmax(softmax, axis=2)
+
+        num_errs = num_labels - tf.reduce_sum(
+                        tf.cast(tf.math.equal(labels, predictions), dtype=tf.int32))
+
+        if self.rank_size > 1:
+            num_errs = hvd.allreduce(num_errs, average=False)
+            num_labels = hvd.allreduce(num_labels, average=False)
+
+        self.error_count(num_errs)
+        self.total_count(num_labels)
+        return num_errs, num_labels
 
 
 class CharactorAccuracy(Accuracy):
@@ -134,18 +167,18 @@ class CTCAccuracy(CharactorAccuracy):
 
 class ClassificationAccuracy(Accuracy):
     """ ClassificationAccuracy
-        Implements top-1 accuracy calculation for speaker classification
+        Implements top-k accuracy calculation for speaker classification
         (closed-set speaker recognition)
     """
-    def __init__(self, name="ClassificationAccuracy", rank_size=1):
+    def __init__(self, top_k=1, name="ClassificationAccuracy", rank_size=1):
         super().__init__(name=name, rank_size=rank_size)
+        self.top_k = top_k
 
     def update_state(self, predictions, samples, logit_length=None):
-        labels = tf.cast(tf.squeeze(samples["output"]), dtype=tf.int64)
+        labels = tf.squeeze(samples["output"], axis=-1)
         num_labels = tf.shape(labels)[0]
-        predictions = tf.argmax(predictions, axis=1)
         num_errs = num_labels - tf.reduce_sum(
-                        tf.cast(tf.math.equal(labels, predictions), dtype=tf.int32))
+                       tf.cast(tf.math.in_top_k(labels, predictions, self.top_k), dtype=tf.int32))
 
         if self.rank_size > 1:
             num_errs = hvd.allreduce(num_errs, average=False)
@@ -179,7 +212,7 @@ class EqualErrorRate:
 
     def update_state(self, predictions, samples, logit_length=None):
         """ append new predictions and labels """
-        labels = tf.squeeze(samples["output"])
+        labels = tf.squeeze(samples["output"], axis=-1)
         self.predictions.write(self.index, predictions)
         self.labels.write(self.index, labels)
         self.index += 1
@@ -194,3 +227,27 @@ class EqualErrorRate:
         eer = brentq(lambda x: 1. - x - interp1d(fpr, tpr)(x), 0., 1.)
         eer = eer * 100
         return eer
+
+class MeanAbsoluteError:
+    def __init__(self, max_val=100, name="MeanAbsoluteError"):
+        self.max_val = max_val
+        self.name = name
+        self.error_count = tf.keras.metrics.Sum(dtype=tf.float32)
+        self.total_count = tf.keras.metrics.Sum(dtype=tf.float32)
+
+    def __call__(self, predictions, samples):
+        return self.update_state(predictions, samples)
+
+    def update_state(self, predictions, samples):
+        labels = tf.squeeze(samples["output"], axis=-1)
+        num_labels = tf.shape(labels)[0]
+        self.total_count(num_labels)
+
+        mae = tf.reduce_sum(tf.keras.losses.MeanAbsoluteError(labels, predictions * self.max_val))
+        self.error_count(mae)
+
+        return mae, num_labels
+
+    def result(self):
+        mae = tf.cast(self.error_count.result() / self.total_count.result(), tf.float32)
+        return mae

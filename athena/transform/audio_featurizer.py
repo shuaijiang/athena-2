@@ -57,7 +57,10 @@ class AudioFeaturizer:
         :sr sample rate
         :return feature
         """
-
+        """
+        feat = tf.convert_to_tensor(kaldiio.load_mat(audio))
+        return feat
+        """
         if audio is not None and not tf.is_tensor(audio):
             audio = tf.convert_to_tensor(audio)
         if sr is not None and not tf.is_tensor(sr):

@@ -37,6 +37,8 @@ SUPPORTED_DATASET_BUILDER = {
 
 SUPPORTED_MODEL = {
     "deep_speech": DeepSpeechModel,
+    "deep_speech_ce": DeepSpeechModelCE,
+    "deep_speech_conv4_pb": DeepSpeechModelConv4PB,
     "speech_transformer": SpeechTransformer,
     "speech_transformer2": SpeechTransformer2,
     "mtl_transformer_ctc": MtlTransformerCtc,
@@ -47,12 +49,15 @@ SUPPORTED_MODEL = {
     "stargan" : StarganModel,
     "tts_transformer": TTSTransformer,
     "fastspeech": FastSpeech,
-    "speaker_resnet": SpeakerResnet
+    "speaker_resnet": SpeakerResnet,
+    "age_resnet": AgeResnetRelu,
 }
 
 SUPPORTED_OPTIMIZER = {
     "warmup_adam": WarmUpAdam,
-    "expdecay_adam": ExponentialDecayAdam
+    "expdecay_adam": ExponentialDecayAdam,
+    "sgd": SGD,
+    "decay_sgd": PiecewiseConstantDecaySGD
 }
 
 DEFAULT_CONFIGS = {
@@ -74,6 +79,7 @@ DEFAULT_CONFIGS = {
     "num_data_threads": 1,
     "dataset_builder": "speech_recognition_dataset",
     "dev_dataset_builder": None,
+    "test_dataset_builder": None,
     "trainset_config": None,
     "devset_config": None,
     "testset_config": None,

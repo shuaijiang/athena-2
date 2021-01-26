@@ -45,13 +45,16 @@ class Checkpoint(tf.train.Checkpoint):
         self.best_loss = np.inf
         self.n_best_model = {}
         self.metric_name = model.metric.name
+        if hasattr(model, 'eval_metric'):
+            self.metric_name = model.eval_metric.name
         if checkpoint_directory is None:
             checkpoint_directory = os.path.join(os.path.expanduser("~"), ".athena")
         self.checkpoint_prefix = os.path.join(checkpoint_directory, "ckpt")
         self.checkpoint_directory = checkpoint_directory
-        logging.info("trying to restore from : %s" % checkpoint_directory)
+        checkpoint = tf.train.latest_checkpoint(checkpoint_directory)
+        logging.info("trying to restore from : %s" % checkpoint)
         # load from checkpoint if previous models exist in checkpoint dir
-        self.restore(tf.train.latest_checkpoint(checkpoint_directory))
+        self.restore(checkpoint)
         if os.path.exists(os.path.join(self.checkpoint_directory, 'n_best')):
             with open(os.path.join(self.checkpoint_directory, 'n_best')) as f:
                 for line in f:
@@ -111,9 +114,9 @@ class Checkpoint(tf.train.Checkpoint):
 
     def restore_from_best(self):
         """ restore from the best model """
-        self.restore(
-            tf.train.latest_checkpoint(
+        checkpoint = tf.train.latest_checkpoint(
                 self.checkpoint_directory,
                 latest_filename='best_loss'
-            )
         )
+        logging.info("trying to restore from best_loss: %s" % checkpoint)
+        self.restore(checkpoint)

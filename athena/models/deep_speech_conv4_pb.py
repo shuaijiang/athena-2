@@ -25,8 +25,7 @@ from ..loss import CTCLoss
 from ..metrics import CTCAccuracy
 from ..layers.commons import SUPPORTED_RNNS
 
-
-class DeepSpeechModel(BaseModel):
+class DeepSpeechModelConv4PB(BaseModel):
     """ a sample implementation of CTC model """
     default_config = {
         "conv_filters": 256,
@@ -37,7 +36,6 @@ class DeepSpeechModel(BaseModel):
     def __init__(self, data_descriptions, config=None):
         super().__init__()
         self.num_classes = data_descriptions.num_class + 1
-        self.blank = self.num_classes - 1
         self.loss_function = CTCLoss(blank_index=-1)
         self.metric = CTCAccuracy()
         self.hparams = register_and_parse_hparams(self.default_config, config, cls=self.__class__)
@@ -45,48 +43,74 @@ class DeepSpeechModel(BaseModel):
         layers = tf.keras.layers
         input_feature = layers.Input(
             shape=data_descriptions.sample_shape["input"],
-            dtype=tf.float32
+            dtype=tf.float32,
+            name="input_feature"
         )
         inner = layers.Conv2D(
             filters=self.hparams.conv_filters,
-            kernel_size=(4, 4), # 41 11
+            kernel_size=(4, 4),
             strides=(2, 2),
             padding="same",
             use_bias=False,
             data_format="channels_last",
-        )(input_feature)
+        )(input_feature)#[:,1:-1,:,:]
         inner = layers.BatchNormalization()(inner)
         inner = tf.nn.relu6(inner)
+        #inner = tf.identity(inner, name="cnn_output")
+        #self.enc_1 = tf.keras.Model(inputs=input_feature,
+        #                          outputs=inner)
         inner = layers.Conv2D(
             filters=self.hparams.conv_filters,
-            kernel_size=(4, 4), # 21 11
+            kernel_size=(4, 4),
             strides=(2, 1),
             padding="same",
             use_bias=False,
             data_format="channels_last",
-        )(inner)
+        )(inner)[:,1:-1,:,:]
         inner = layers.BatchNormalization()(inner)
         inner = tf.nn.relu6(inner)
         _, _, dim, channels = inner.get_shape().as_list()
         output_dim = dim * channels
-        inner = layers.Reshape((-1, output_dim))(inner)
+        inner = layers.Reshape((-1, output_dim))(inner) #[:,:-1,:]
+        inner = tf.identity(inner, name="cnn_output")
+        self.enc = tf.keras.Model(inputs=input_feature,
+                                  outputs=inner)
+        logging.info(self.enc.summary())
+
         rnn_type = self.hparams.rnn_type
         rnn_hidden_size = self.hparams.rnn_hidden_size
+        self.inputs = []
+        self.inputs.append(input_feature)
+        self.outputs = []
+        for i in range(self.hparams.num_rnn_layers):
+            initial = tf.keras.layers.Input(
+                shape=(512, ),
+                dtype=tf.float32,
+                name="initial_"+str(i))
+            self.inputs.append(initial)
 
-        for _ in range(self.hparams.num_rnn_layers):
-            inner = tf.keras.layers.RNN(
+            inner, last_state = tf.keras.layers.RNN(
                 cell=[SUPPORTED_RNNS[rnn_type](rnn_hidden_size)],
-                return_sequences=True
-            )(inner)
+                return_sequences=True,
+                return_state=True
+            )(inputs=inner, initial_state=[initial])
+            state = tf.identity(last_state[0], name="state_"+str(i))
+            self.outputs.append(state)
             inner = layers.BatchNormalization()(inner)
         inner = layers.Dense(rnn_hidden_size, activation=tf.nn.relu6)(inner)
         inner = layers.Dense(self.num_classes)(inner)
-        self.net = tf.keras.Model(inputs=input_feature, outputs=inner)
+        inner = tf.nn.log_softmax(inner)
+        logits = tf.identity(inner, name="logits")
+        self.outputs.append(logits)
+        self.net = tf.keras.Model(inputs=self.inputs,
+                                  outputs=self.outputs)
         logging.info(self.net.summary())
+
 
     def call(self, samples, training=None):
         """ call function """
-        return self.net(samples["input"], training=training)
+        #return self.net(samples["input"], training=training)
+        return self.enc(samples, training=training)
 
     def compute_logit_length(self, samples):
         """ used for get logit length """
@@ -95,12 +119,3 @@ class DeepSpeechModel(BaseModel):
         logit_length = tf.math.ceil(logit_length / 2)
         logit_length = tf.cast(logit_length, tf.int32)
         return logit_length
-
-    def decode(self, samples, hparams, lm_model=None):
-        predicts =  self.net.predict(samples["input"])
-        softmax = tf.nn.softmax(predicts)
-        argmax = tf.math.argmax(softmax, axis=2)
-        if hparams.print_ctc_scores:
-            am_scores = tf.math.reduce_max(softmax, axis=2)
-            return (argmax, am_scores)
-        return argmax

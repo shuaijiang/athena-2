@@ -21,25 +21,25 @@ import tensorflow as tf
 from absl import logging
 from ..utils.hparam import register_and_parse_hparams
 from .base import BaseModel
-from ..loss import CTCLoss
-from ..metrics import CTCAccuracy
+from ..loss import CrossEntropyLoss
+from ..metrics import FrameAccuracy
 from ..layers.commons import SUPPORTED_RNNS
 
 
-class DeepSpeechModel(BaseModel):
-    """ a sample implementation of CTC model """
+class DeepSpeechModelCE(BaseModel):
+    """ a sample implementation of fix label model with cross entropy loss """
     default_config = {
-        "conv_filters": 256,
-        "rnn_hidden_size": 1024,
-        "num_rnn_layers": 6,
+        "conv_filters": 128,
+        "rnn_hidden_size": 512,
+        "num_rnn_layers": 5,
         "rnn_type": "gru"
     }
     def __init__(self, data_descriptions, config=None):
         super().__init__()
         self.num_classes = data_descriptions.num_class + 1
         self.blank = self.num_classes - 1
-        self.loss_function = CTCLoss(blank_index=-1)
-        self.metric = CTCAccuracy()
+        self.loss_function = CrossEntropyLoss(num_classes=self.num_classes)
+        self.metric = FrameAccuracy()
         self.hparams = register_and_parse_hparams(self.default_config, config, cls=self.__class__)
 
         layers = tf.keras.layers
@@ -49,7 +49,7 @@ class DeepSpeechModel(BaseModel):
         )
         inner = layers.Conv2D(
             filters=self.hparams.conv_filters,
-            kernel_size=(4, 4), # 41 11
+            kernel_size=(8, 8),
             strides=(2, 2),
             padding="same",
             use_bias=False,
@@ -59,7 +59,7 @@ class DeepSpeechModel(BaseModel):
         inner = tf.nn.relu6(inner)
         inner = layers.Conv2D(
             filters=self.hparams.conv_filters,
-            kernel_size=(4, 4), # 21 11
+            kernel_size=(8, 8),
             strides=(2, 1),
             padding="same",
             use_bias=False,

@@ -55,11 +55,14 @@ from .models.tts_transformer import TTSTransformer
 from .models.fastspeech import FastSpeech
 from .models.masked_pc import MaskedPredictCoding
 from .models.deep_speech import DeepSpeechModel
+from .models.deep_speech_ce import DeepSpeechModelCE
+from .models.deep_speech_conv4_pb import DeepSpeechModelConv4PB
 from .models.mtl_seq2seq import MtlTransformerCtc
 from .models.rnn_lm import RNNLM
 from .models.translate_transformer import NeuralTranslateTransformer
 from .models.stargan_vc import StarganModel
 from .models.speaker_resnet import SpeakerResnet
+from .models.age_resnet_relu import AgeResnetRelu
 
 # solver & loss & accuracy
 from .solver import BaseSolver

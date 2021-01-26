@@ -20,6 +20,28 @@ import math
 import tensorflow as tf
 from .utils.misc import insert_eos_in_labels
 
+class CrossEntropyLoss(tf.keras.losses.Loss):
+    """ Cross Entropy Loss """
+    def __init__(self, num_classes=1314, name="CrossEntropyLoss"):
+        super().__init__(name=name)
+        self.num_classes = num_classes
+
+    def __call__(self, logits, samples, logit_length=None):
+        """
+        Args:
+            logits: [batch_size, logit_length, num_class]
+            samples:
+            logit_length:
+        Returns:
+            cross entropy loss
+        """
+        input_length = tf.cast(samples["input_length"], tf.float32)
+        logits_length = tf.cast(tf.shape(logits)[1], tf.float32)
+        down_num = tf.cast(tf.math.ceil(input_length / logits_length), tf.int32)[0]
+        labels_down = samples["output"][:,::down_num]
+        labels = tf.one_hot(indices=labels_down, depth=self.num_classes)
+        ce_loss = tf.nn.softmax_cross_entropy_with_logits(labels=labels, logits=logits)
+        return tf.reduce_mean(ce_loss)
 
 class CTCLoss(tf.keras.losses.Loss):
     """ CTC LOSS
@@ -356,28 +378,34 @@ class FastSpeechLoss(tf.keras.losses.Loss):
 
         return final_loss
 
+class MSELoss(tf.keras.losses.Loss):
+    """ mean squares errors Loss
+    """
+    def __init__(self, max_scale=100, name="MSELoss"):
+        super().__init__(name=name)
+        self.max_scale = max_scale
+        self.criterion = tf.keras.losses.MeanSquaredError()
+
+    def __call__(self, outputs, samples, logit_length=None):
+        labels = tf.squeeze(samples['output'])
+        labels_norm = labels / self.max_scale
+        loss = tf.reduce_mean(self.criterion(labels_norm, outputs))
+        return loss
 
 class SoftmaxLoss(tf.keras.losses.Loss):
     """ Softmax Loss
         Similar to this implementation "https://github.com/clovaai/voxceleb_trainer"
     """
-    def __init__(self, embedding_size, num_classes, name="SoftmaxLoss"):
+    def __init__(self, num_classes, name="SoftmaxLoss"):
         super().__init__(name=name)
-        self.embedding_size = embedding_size
         self.num_classes = num_classes
         self.criterion = tf.nn.softmax_cross_entropy_with_logits
-        self.dense = tf.keras.layers.Dense(
-            num_classes,
-            kernel_initializer=tf.compat.v1.truncated_normal_initializer(stddev=0.02),
-            input_shape=(embedding_size,),
-        )
 
     def __call__(self, outputs, samples, logit_length=None):
         labels = tf.squeeze(samples['output'])
-        outputs = self.dense(outputs)
         label_onehot = tf.one_hot(labels, self.num_classes)
         loss = tf.reduce_mean(self.criterion(label_onehot, outputs))
-        return loss, outputs
+        return loss
 
 
 class AMSoftmaxLoss(tf.keras.losses.Loss):

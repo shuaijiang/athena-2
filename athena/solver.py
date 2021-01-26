@@ -31,8 +31,8 @@ import numpy as np
 import librosa
 from .utils.hparam import register_and_parse_hparams
 from .utils.metric_check import MetricChecker
-from .utils.misc import validate_seqs, validate_ctc_seqs
-from .metrics import CharactorAccuracy
+from .utils.misc import validate_seqs
+from .metrics import CharactorAccuracy, ClassificationAccuracy, EqualErrorRate, MeanAbsoluteError
 from .tools.vocoder import GriffinLim
 from .tools.beam_search import BeamSearchDecoder
 try:
@@ -215,7 +215,8 @@ class DecoderSolver(BaseSolver):
         "decoder_type": "wfst_decoder",
         "model_avg_num": 1,
         "beam_size": 4,
-        "ctc_label": False,
+        "print_ctc_label": False,
+        "ctc_scores": False,
         "ctc_weight": 0.0,
         "lm_weight": 0.1,
         "lm_type": "",
@@ -257,19 +258,29 @@ class DecoderSolver(BaseSolver):
             begin = time.time()
             samples = self.model.prepare_samples(samples)
             predictions = self.model.decode(samples, self.hparams, self.decoder)
-            if self.params.ctc_label:
-                predictions = predictions[0]
-                am_scores = predictions[1]
-                validated_preds, validated_scores = validate_ctc_seqs(predictions, am_scores, self.model.blank)
+
+            if self.hparams.ctc_label:
+                if self.hparams.print_ctc_label:
+                    pred_labels = predictions[0]
+                    am_scores = predictions[1]
+                else:
+                    pred_labels = predictions
+                    am_scores = None
+                validated_preds, validated_scores = validate_ctc_seqs(pred_labels,
+                                                                      self.model.blank, am_scores)
             else:
-                validated_preds = validate_seqs(predictions, self.model.eos)[0]
+                pred_labels = predictions
+                validated_preds = validate_seqs(pred_labels, self.model.eos)[0]
+
             validated_preds = tf.cast(validated_preds, tf.int64)
             num_errs, _ = metric.update_state(validated_preds, samples)
+
             reports = (
-                "predictions: %s\t scores: %s\tlabels: %s\terrs: %d\tavg_acc: %.4f\tsec/iter: %.4f"
+
+                "predictions: %s\tscores: %s\tlabels: %s\terrs: %d\tavg_acc: %.4f\tsec/iter: %.4f"
                 % (
-                    predictions,
-                    validated_scores,
+                    validated_preds.values.numpy(),
+                    validated_scores.values.numpy() if validated_scores is not None else None,
                     samples["output"].numpy(),
                     num_errs,
                     metric.result(),
@@ -319,6 +330,175 @@ class SynthesisSolver(BaseSolver):
                 self.vocoder(samples_outputs.numpy(), self.hparams, name='true_%s' % str(i))
             features = self.feature_normalizer(features[0], speaker, reverse=True)
             self.vocoder(features.numpy(), self.hparams, name=i)
+        logging.info("model computation elapsed: %s" % total_elapsed)
+
+class GenderSolver(BaseSolver):
+    """ SpeakerSolver
+    inference solver for speaker recognition (closed-set)
+    """
+    default_config = {
+        "model_avg_num": 1
+    }
+    def __init__(self, model, config=None):
+        super().__init__(model, None, None)
+        self.model = model
+        self.hparams = register_and_parse_hparams(self.default_config, config, cls=self.__class__)
+
+    def decode(self, dataset, rank_size=1):
+        """ decode the model """
+        if dataset is None:
+            return
+        metric_top1 = ClassificationAccuracy(top_k=1, name="top1_acc", rank_size=rank_size)
+
+        total_elapsed = 0
+        inference_step = tf.function(self.model.decode, input_signature=self.sample_signature)
+        for _, samples in enumerate(dataset):
+            samples = self.model.prepare_samples(samples)
+            start = time.time()
+            predictions = inference_step(samples, self.hparams)
+            end = time.time() - start
+            total_elapsed += end
+            argmax = tf.argmax(predictions, axis=1)
+            _, _ = metric_top1.update_state(predictions, samples)
+            reports = (
+                "predictions: %s\targmax:%s\tlabels: %s\t \
+                    top1_acc: %.4f\tsec/iter: %.4f"
+                % (
+                    predictions,
+                    argmax,
+                    samples["output"].numpy(),
+                    metric_top1.result(),
+                    end,
+                )
+            )
+            logging.info(reports)
+        logging.info("model computation elapsed: %s" % total_elapsed)
+
+class AgeSolver(BaseSolver):
+    """ SpeakerSolver
+    inference solver for speaker recognition (closed-set)
+    """
+    default_config = {
+        "model_avg_num": 1
+    }
+    def __init__(self, model, config=None):
+        super().__init__(model, None, None)
+        self.model = model
+        self.hparams = register_and_parse_hparams(self.default_config, config, cls=self.__class__)
+
+    def decode(self, dataset, rank_size=1):
+        """ decode the model """
+        if dataset is None:
+            return
+        metric_mae = MeanAbsoluteError(max_val=self.hparams.max_age)
+
+        total_elapsed = 0
+        inference_step = tf.function(self.model.decode, input_signature=self.sample_signature)
+        for _, samples in enumerate(dataset):
+            samples = self.model.prepare_samples(samples)
+            start = time.time()
+            predictions = inference_step(samples, self.hparams)
+            end = time.time() - start
+            total_elapsed += end
+            predictions = predictions * self.hparams.max_age
+            _, _ = metric_mae.update_state(predictions, samples)
+            reports = (
+                "predictions: %s\tlabels: %s\t \
+                    top1_acc: %.4f\tsec/iter: %.4f"
+                % (
+                    predictions,
+                    samples["output"].numpy(),
+                    metric_mae.result(),
+                    end,
+                )
+            )
+            logging.info(reports)
+        logging.info("model computation elapsed: %s" % total_elapsed)
+
+class SpeakerSolver(BaseSolver):
+    """ SpeakerSolver
+    inference solver for speaker recognition (closed-set)
+    """
+    default_config = {
+        "model_avg_num": 1
+    }
+    def __init__(self, model, config=None):
+        super().__init__(model, None, None)
+        self.model = model
+        self.hparams = register_and_parse_hparams(self.default_config, config, cls=self.__class__)
+
+    def decode(self, dataset, rank_size=1):
+        """ decode the model """
+        if dataset is None:
+            return
+        metric_top1 = ClassificationAccuracy(top_k=1, name="top1_acc", rank_size=rank_size)
+        metric_top5 = ClassificationAccuracy(top_k=5, name="top5_acc", rank_size=rank_size)
+
+        total_elapsed = 0
+        inference_step = tf.function(self.model.decode, input_signature=self.sample_signature)
+        for _, samples in enumerate(dataset):
+            samples = self.model.prepare_samples(samples)
+            start = time.time()
+            predictions = inference_step(samples, self.hparams)
+            end = time.time() - start
+            total_elapsed += end
+            argmax = tf.argmax(predictions, axis=1)
+            _, _ = metric_top1.update_state(predictions, samples)
+            _, _ = metric_top5.update_state(predictions, samples)
+            reports = (
+                "predictions: %s\targmax:%s\tlabels: %s\t \
+                    top1_acc: %.4f\ttop5_acc: %.4f\tsec/iter: %.4f"
+                % (
+                    predictions,
+                    argmax,
+                    samples["output"].numpy(),
+                    metric_top1.result(),
+                    metric_top5.result(),
+                    end,
+                )
+            )
+            logging.info(reports)
+        logging.info("model computation elapsed: %s" % total_elapsed)
+
+
+class SpeakerVerificationSolver(BaseSolver):
+    """ SpeakerVerificationSolver
+    inference solver for speaker recognition (open-set)
+    """
+    default_config = {
+        "model_avg_num": 1
+    }
+    def __init__(self, model, config=None):
+        super().__init__(model, None, None)
+        self.model = model
+        self.hparams = register_and_parse_hparams(self.default_config, config, cls=self.__class__)
+
+    def decode(self, dataset, rank_size=1):
+        """ decode the model """
+        if dataset is None:
+            return
+        metric = EqualErrorRate(name="eer")
+
+        total_elapsed = 0
+        inference_step = self.model.verification
+        for _, samples in enumerate(dataset):
+            samples = self.model.prepare_samples(samples)
+            start = time.time()
+            predictions = inference_step(samples)
+            end = time.time() - start
+            total_elapsed += end
+            metric.update_state(predictions, samples)
+            reports = (
+                "predictions: %s\tlabels: %s\t \
+                    eer: %.4f\tsec/iter: %.4f"
+                % (
+                    predictions,
+                    samples["output"].numpy(),
+                    metric.result(),
+                    end,
+                )
+            )
+            logging.info(reports)
         logging.info("model computation elapsed: %s" % total_elapsed)
 
 
@@ -502,4 +682,3 @@ class ConvertSolver(BaseSolver):
 
             librosa.output.write_wav(wavpath, synwav, sr=self.fs)
             print("generate wav:", wavpath)
-
